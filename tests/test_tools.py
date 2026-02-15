@@ -206,8 +206,8 @@ def test_simulate_camera_dimensions():
 def test_simulate_microphone():
     """Test simulated microphone with deterministic output."""
     async def _test():
-        result1 = await simulate_microphone(duration_sec=1.0, seed=42)
-        result2 = await simulate_microphone(duration_sec=1.0, seed=42)
+        result1 = await simulate_microphone(duration=1.0, seed=42)
+        result2 = await simulate_microphone(duration=1.0, seed=42)
         
         assert result1["status"] == "success"
         assert result2["status"] == "success"
@@ -223,10 +223,10 @@ def test_simulate_microphone():
 def test_simulate_microphone_duration():
     """Test simulated microphone respects duration."""
     async def _test():
-        result = await simulate_microphone(duration_sec=2.5, seed=0)
+        result = await simulate_microphone(duration=2.5, seed=0)
         
         assert result["status"] == "success"
-        assert result["duration_sec"] == 2.5
+        assert result["duration"] == 2.5
         assert result["samplerate"] == 16000
     
     asyncio.run(_test())
@@ -236,7 +236,7 @@ def test_simulate_microphone_duration():
 def test_simulate_microphone_too_short():
     """Test simulated microphone rejects too short duration."""
     async def _test():
-        result = await simulate_microphone(duration_sec=0.05)
+        result = await simulate_microphone(duration=0.05)
         
         assert result["status"] == "error"
         assert "too_short" in result["error"]
@@ -248,7 +248,7 @@ def test_simulate_microphone_too_short():
 def test_simulate_microphone_too_long():
     """Test simulated microphone rejects too long duration."""
     async def _test():
-        result = await simulate_microphone(duration_sec=120)
+        result = await simulate_microphone(duration=120)
         
         assert result["status"] == "error"
         assert "too_long" in result["error"]
