@@ -126,6 +126,59 @@ drives both the terminal demo and the browser view.
 
 ---
 
+## Real hardware
+
+The reflex loop above isn't just a simulated demo — it's been run against a
+physical ELEGOO Mega 2560 with an HC-SR04 ultrasonic sensor, an SG90 servo,
+and a DHT11 temperature/humidity module, over a plain serial connection.
+Same `EngineCore`, same `reflex_system`, same `record_sensor_reading()` —
+the only thing that changes is where the numbers come from.
+
+**Wiring:**
+
+| Component | Pin | Mega pin |
+|---|---|---|
+| HC-SR04 | TRIG / ECHO | D9 / D10 |
+| SG90 servo | signal | D6 |
+| DHT11 | DATA/OUT | D7 |
+| Onboard L LED | — | D13 (built in, no wiring) |
+
+All three share the Mega's 5V/GND rails.
+
+**Serial protocol** (9600 baud, newline-terminated):
+
+```
+Arduino -> PC   D,<distance_cm>          every ~100ms
+                T,<temp_c>,<humidity>    every ~2s (DHT11's max rate)
+PC -> Arduino   STOP                     park servo, LED on
+                HOME                     servo to center, LED off
+                S,<angle>                move servo to a specific angle
+                ALARM                    servo sweep + LED blink, then HOME
+```
+
+**Run it:**
+
+```bash
+pip install pyserial   # or: pip install -r requirements.txt
+
+# Flash examples/arduino/anse_reflex_demo/anse_reflex_demo.ino first
+# (Arduino IDE, or `arduino-cli compile/upload --fqbn arduino:avr:mega`)
+
+python -u examples/arduino_hardware_demo.py --port COM3
+```
+
+`-u` matters on Windows — stdout is fully buffered when it isn't attached
+to a terminal, so without it the readings won't print live.
+
+Two reflexes are wired by default: `distance_cm < 10` → `emergency_stop`
+(servo parks, LED lights), and `temperature_c > 34` → `flame_alert` (servo
+sweeps, LED blinks) — proven by holding a lighter flame a few cm from the
+DHT11 and watching the temperature climb past threshold in real time. Same
+`reflex_system.add_reflex()` call as the simulated demo; the sensor just
+happens to be a real one this time.
+
+---
+
 ## Building a reflex
 
 This is the actual API a reflex is built from — no YAML DSL, just a direct
@@ -199,6 +252,8 @@ and "actually wired up" is exactly what this rewrite exists to close.
   now reflects real reflex firings live.
 - **Rate limiting** (`anse/scheduler.py`) — was already real, unaffected by
   any of the above.
+- **Real hardware.** The same reflex path proven on physical hardware, not
+  just simulated readings — see [Real hardware](#real-hardware) above.
 
 ### Exists, but not wired up yet — known, not hidden
 - **`anse/safety/permission.py`** (scopes, human-approval-required lists) is
@@ -235,6 +290,8 @@ plugins/
 backend/websocket_backend.py  live demo: real engine + WebSocket + dashboard feed
 dashboard/                    browser UI — vanilla JS, zero build step
 examples/reflex_bus_demo.py   terminal-only proof the event bus works
+examples/arduino_hardware_demo.py       same demo, driven by a real Arduino over serial
+examples/arduino/anse_reflex_demo/      the .ino sketch — HC-SR04 + servo + DHT11
 tests/                         pytest suite
 docs/                           API.md, PLUGINS.md, DESIGN.md, etc.
 ```

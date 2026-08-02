@@ -5,6 +5,7 @@ soundfile>=0.11.0
 pyttsx3>=2.90
 pyyaml>=6.0
 numpy>=1.20.0
+pyserial>=3.5
 psutil>=5.9.0
 flask>=2.3.0
 flask-sqlalchemy>=3.0.0
