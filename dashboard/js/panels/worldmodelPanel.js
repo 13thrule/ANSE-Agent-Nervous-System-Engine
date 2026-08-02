@@ -62,7 +62,11 @@ class WorldModelPanel extends BasePanel {
     }
 
     onUpdate(event) {
-        if (event.type !== 'worldmodel') return;
+        // event.type is the wire type ("world_model_update"), not the short
+        // internal channel name ("worldmodel") — this used to check the
+        // latter and so always bailed here, leaving the panel stuck on "--"
+        // even though routing (now fixed) was correctly reaching it.
+        if (event.type !== 'world_model_update') return;
 
         const {
             distance_cm,

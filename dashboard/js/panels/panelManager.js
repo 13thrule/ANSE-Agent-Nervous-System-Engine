@@ -94,24 +94,32 @@ class PanelManager {
     routeEvent(event) {
         const { type, data, timestamp } = event;
 
+        // These must match the wire types websocket.js actually emits
+        // (sensor_event / actuator_event / reflex_event / world_model_update
+        // — see the header comment in websocket.js), not the short internal
+        // channel names it happens to emit() them under. They used to be the
+        // short names here, so this switch never matched anything and every
+        // per-type panel silently never got created — only the event log
+        // worked, since it's routed to unconditionally below regardless of
+        // this switch's outcome.
         switch (type) {
-            case 'sensor':
+            case 'sensor_event':
                 this.routeSensorEvent(event);
                 break;
 
-            case 'actuator':
+            case 'actuator_event':
                 this.routeActuatorEvent(event);
                 break;
 
-            case 'reflex':
+            case 'reflex_event':
                 this.routeReflexEvent(event);
                 break;
 
-            case 'worldmodel':
+            case 'world_model_update':
                 this.routeWorldModelEvent(event);
                 break;
 
-            case 'system':
+            case 'system_event':
                 this.routeSystemEvent(event);
                 break;
 

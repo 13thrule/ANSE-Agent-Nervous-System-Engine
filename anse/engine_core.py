@@ -223,19 +223,37 @@ class EngineCore:
 
     def _load_plugins(self) -> None:
         """Load and register plugins from the plugins/ directory."""
+        self.plugins: dict = {}
         try:
             plugin_loader = PluginLoader(plugin_dir="plugins")
             plugins = plugin_loader.load_all()
-            
+
             if plugins:
                 logger.info(f"Found {len(plugins)} plugin(s), registering...")
                 plugin_loader.register_with_engine(self)
-                
+
                 for plugin_name, info in plugins.items():
                     logger.info(f"✓ Loaded plugin: {plugin_name} ({info['type']})")
+
+                # Expose instances so callers (demos, other subsystems) can
+                # reach a plugin's own methods, not just its registered tools.
+                self.plugins = dict(plugin_loader.plugin_instances)
+
+                # Any plugin implementing process_world_model_event() is a
+                # reflex-style listener — subscribe it to the world model so
+                # it reacts to events live instead of needing to be polled.
+                # This is the actual wiring that makes the reflex system a
+                # real event bus consumer rather than dead code that only
+                # runs if something happens to call it directly.
+                for plugin_name, instance in plugin_loader.plugin_instances.items():
+                    if hasattr(instance, "process_world_model_event"):
+                        self.world.subscribe(
+                            lambda event, _inst=instance: _inst.process_world_model_event(event, self)
+                        )
+                        logger.info(f"✓ Subscribed {plugin_name} to world model events")
             else:
                 logger.debug("No plugins found in plugins/ directory")
-        
+
         except Exception as e:
             logger.warning(f"Failed to load plugins: {e}")
             # Don't crash if plugins fail to load - core engine should still work

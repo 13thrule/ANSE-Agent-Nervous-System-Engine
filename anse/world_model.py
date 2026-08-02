@@ -7,10 +7,11 @@ Features:
 - Event replay for deterministic testing
 - Agent-scoped event filtering
 """
+import asyncio
 import time
 import json
 import os
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from collections import deque
 from datetime import datetime
 
@@ -35,15 +36,52 @@ class WorldModel:
         self.max_events = max_events
         self.persist_path = persist_path
         self.call_id_counter = 0
-        
+        self._listeners: List[Callable[[Dict[str, Any]], Any]] = []
+
         if self.persist_path:
             os.makedirs(os.path.dirname(os.path.abspath(self.persist_path)), exist_ok=True)
             logger.info(f"WorldModel persistence enabled: {self.persist_path}")
 
+    def subscribe(self, callback: Callable[[Dict[str, Any]], Any]) -> None:
+        """
+        Register a callback to be notified of every event as it's appended.
+        This is what makes the world model an actual event bus rather than
+        just a log: reflexes and other plugins react in real time instead of
+        polling. Callback may be sync or async — an async callback (a
+        coroutine function) is scheduled as a task rather than awaited
+        in-line, so a slow listener can never block the tool-call path that
+        produced the event.
+
+        Args:
+            callback: Called with the event dict on every append_event()
+        """
+        self._listeners.append(callback)
+
+    def _notify_listeners(self, event: Dict[str, Any]) -> None:
+        for callback in self._listeners:
+            try:
+                result = callback(event)
+                if asyncio.iscoroutine(result):
+                    try:
+                        asyncio.get_running_loop()
+                        asyncio.create_task(result)
+                    except RuntimeError:
+                        # No running loop (e.g. called from sync code/tests) —
+                        # nothing to schedule the coroutine on, so drop it
+                        # rather than block append_event with asyncio.run().
+                        logger.warning(
+                            "WorldModel listener returned a coroutine with no "
+                            "running event loop; skipping it"
+                        )
+                        result.close()
+            except Exception as e:
+                logger.error(f"WorldModel listener error: {e}")
+
     def append_event(self, event: Dict[str, Any]) -> None:
         """
-        Append an event to the history and optionally persist it.
-        
+        Append an event to the history, optionally persist it, and notify
+        any subscribed listeners (see subscribe()).
+
         Args:
             event: Dictionary containing event data. Should include:
                 - timestamp: float (epoch seconds) - auto-added if missing
@@ -54,16 +92,34 @@ class WorldModel:
         """
         if "timestamp" not in event:
             event["timestamp"] = time.time()
-        
+
         if "call_id" not in event:
             self.call_id_counter += 1
             event["call_id"] = f"event-{self.call_id_counter}"
-        
+
         self.events.append(event)
-        
+
         # Persist to JSONL if configured
         if self.persist_path:
             self._persist_event(event)
+
+        self._notify_listeners(event)
+
+    def record_sensor_reading(
+        self, sensor_name: str, value: Any, agent_id: str = "sensor", **extra: Any
+    ) -> None:
+        """
+        Convenience wrapper for the event shape reflex-style listeners expect
+        (a flat "sensor_name"/"value" pair) — sensors should call this rather
+        than building a "sensor_reading" event dict by hand.
+        """
+        self.append_event({
+            "type": "sensor_reading",
+            "agent_id": agent_id,
+            "sensor_name": sensor_name,
+            "value": value,
+            **extra,
+        })
 
     def _persist_event(self, event: Dict[str, Any]) -> None:
         """Write event to JSONL file."""

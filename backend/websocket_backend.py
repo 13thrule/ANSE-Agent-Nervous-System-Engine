@@ -75,18 +75,101 @@ class ANSEWebSocketBackend:
         self.last_reflex = None
 
     async def initialize_engine(self) -> bool:
-        """Initialize ANSE engine with world model."""
+        """Initialize ANSE engine and wire the real reflex_system plugin to
+        the world model's event bus — no hand-rolled reflex logic here
+        anymore. The engine reacts to sensor readings the same way a real
+        deployment would: reflex_system, subscribed automatically by
+        EngineCore, fires actuator tools directly off world-model events."""
         try:
             self.engine = EngineCore(simulate=True)
             self.world_model = self.engine.world
             self._log("✓ ANSE Engine initialized")
             self._log("✓ World Model ready")
+
+            self.engine.register_tool(
+                name="movement_stop",
+                func=self._movement_stop,
+                description="Stop the movement actuator",
+                parameters={"reason": {"type": "string"}},
+                sensitivity="high",
+                cost_hint={"latency_ms": 10},
+            )
+            self.engine.register_tool(
+                name="movement_resume",
+                func=self._movement_resume,
+                description="Resume the movement actuator",
+                parameters={"reason": {"type": "string"}},
+                sensitivity="medium",
+                cost_hint={"latency_ms": 10},
+            )
+
+            reflex = self.engine.plugins.get("reflex_system")
+            if reflex:
+                await reflex.add_reflex(
+                    sensor_name="distance_cm", threshold=10, comparison="less_than",
+                    action_tool="movement_stop", action_args={"reason": "object within 10cm"},
+                )
+                await reflex.add_reflex(
+                    sensor_name="distance_cm", threshold=15, comparison="greater_than",
+                    action_tool="movement_resume", action_args={"reason": "clear to move"},
+                )
+                await reflex.enable_background_monitoring()
+                self._log("✓ reflex_system: proximity_safeguard + clear_to_move armed")
+            else:
+                self._log("⚠ reflex_system plugin not loaded — reflexes won't fire")
+
+            # Translate real sensor_reading events into the dashboard's wire
+            # format. This is the only bridge code left; everything upstream
+            # of it (reflex firing, actuator dispatch) is the real engine.
+            self.world_model.subscribe(self._on_world_event)
+
             return True
         except Exception as e:
             self._log(f"⚠ Could not initialize ANSE engine: {e}")
             self._log("  Using standalone WorldModel for demo")
             self.world_model = WorldModel()
             return False
+
+    async def _movement_stop(self, reason: str = "") -> dict:
+        """Real actuator tool the proximity_safeguard reflex calls directly."""
+        self.movement_state = "STOPPED"
+        self.last_reflex = "proximity_safeguard"
+        await self.record_and_broadcast_event("reflex", {
+            "reflex_name": "proximity_safeguard",
+            "condition": "distance < 10cm",
+            "triggered": True,
+        }, also_record=False)
+        await self.record_and_broadcast_event("actuator", {
+            "actuator_name": "movement", "actuator_type": "motor", "state": "STOPPED",
+        }, also_record=False)
+        return {"status": "stopped", "reason": reason}
+
+    async def _movement_resume(self, reason: str = "") -> dict:
+        """Real actuator tool the clear_to_move reflex calls directly."""
+        self.movement_state = "MOVING"
+        self.last_reflex = "clear_to_move"
+        await self.record_and_broadcast_event("reflex", {
+            "reflex_name": "clear_to_move",
+            "condition": "distance > 15cm",
+            "triggered": True,
+        }, also_record=False)
+        await self.record_and_broadcast_event("actuator", {
+            "actuator_name": "movement", "actuator_type": "motor", "state": "MOVING",
+        }, also_record=False)
+        return {"status": "moving", "reason": reason}
+
+    async def _on_world_event(self, event: dict):
+        """Bridge: real world-model events -> dashboard broadcast format.
+        Only sensor_reading needs translating here; the reflex/actuator
+        broadcasts above are sent directly by the actuator tools themselves,
+        since they're the ones with concrete knowledge of what fired."""
+        if event.get("type") != "sensor_reading":
+            return
+        await self.record_and_broadcast_event("sensor", {
+            "sensor_name": event["sensor_name"],
+            "sensor_type": "distance",
+            "value": event["value"],
+        }, also_record=False)
 
     async def websocket_handler(self, websocket, path=None):
         """Handle a new WebSocket client connection."""
@@ -126,13 +209,24 @@ class ANSEWebSocketBackend:
                 return_exceptions=True
             )
 
+    # dashboard/js/websocket.js switches on these exact suffixed type
+    # strings and expects the payload nested under "data" — it silently
+    # no-ops ("Unknown message type") on anything else. The world model's
+    # own event log uses short flat types (see world_model.py); this map is
+    # only for the wire format the browser actually expects.
+    WIRE_TYPE = {
+        "sensor": "sensor_event",
+        "reflex": "reflex_event",
+        "actuator": "actuator_event",
+    }
+
     async def broadcast_world_model_snapshot(self, target=None):
         """
         Broadcast the current world model state (brain snapshot).
         This is what the dashboard's World Model panel displays.
         """
         snapshot = {
-            "type": "worldmodel",
+            "type": "world_model_update",
             "timestamp": datetime.now().isoformat(),
             "data": {
                 "distance_cm": round(self.distance, 1),
@@ -146,21 +240,24 @@ class ANSEWebSocketBackend:
         }
         await self.broadcast_to_clients(snapshot, target=target)
 
-    async def record_and_broadcast_event(self, event_type: str, event_data: dict):
-        """Record an event to world model AND broadcast to all clients."""
-        # Build complete event
-        event = {
-            "type": event_type,
-            "timestamp": datetime.now().isoformat(),
-            **event_data
-        }
+    async def record_and_broadcast_event(self, event_type: str, event_data: dict, also_record: bool = True):
+        """Broadcast an event to all clients, optionally also recording it to
+        the world model. also_record=False is for events that are already a
+        translation of something the world model recorded — recording them
+        again would double up the log for one real occurrence."""
+        timestamp = datetime.now().isoformat()
 
-        # Record to ANSE world model
-        if self.world_model:
-            self.world_model.append_event(event)
+        # Record to ANSE world model using the short flat shape (unrelated
+        # to the wire format below — this is the internal event log).
+        if also_record and self.world_model:
+            self.world_model.append_event({"type": event_type, "timestamp": timestamp, **event_data})
 
-        # Broadcast event to all clients
-        await self.broadcast_to_clients(event)
+        # Broadcast to clients in the shape websocket.js actually parses.
+        await self.broadcast_to_clients({
+            "type": self.WIRE_TYPE.get(event_type, event_type),
+            "timestamp": timestamp,
+            "data": event_data,
+        })
 
         # Also send updated world model snapshot (brain state)
         await self.broadcast_world_model_snapshot()
@@ -168,13 +265,18 @@ class ANSEWebSocketBackend:
     async def simulate_distance_sensor(self):
         """
         SENSOR PHASE: Simulate a distance sensor that varies over time.
-        
+
         Pattern:
         - Gradually approach (50cm → 5cm)
         - Trigger reflex (distance < 10cm)
         - Gradually recede (5cm → 50cm)
         - Clear reflex (distance > 15cm)
         - Repeat
+
+        Every reading is fed through world_model.record_sensor_reading() —
+        the real event bus — rather than broadcast directly. reflex_system
+        reacts to it live via the subscription EngineCore set up; this loop
+        no longer knows or cares what happens as a result.
         """
         self._log("[SENSOR] Distance sensor simulation starting")
         self._log("[SENSOR] Pattern: 50cm → 5cm (approach) → 50cm (recede)")
@@ -194,15 +296,7 @@ class ANSEWebSocketBackend:
                 if iteration > 18:
                     iteration = 0  # Reset cycle
 
-            # Broadcast sensor reading
-            await self.record_and_broadcast_event("sensor", {
-                "sensor_name": "distance_sensor",
-                "sensor_type": "distance",
-                "value": round(self.distance, 1),
-            })
-
-            # REFLEX PHASE: Check conditions and trigger reflexes
-            await self.check_and_trigger_reflexes()
+            self.engine.world.record_sensor_reading("distance_cm", round(self.distance, 1))
 
             # Log progress every 5 events
             if self.world_model:
@@ -215,67 +309,6 @@ class ANSEWebSocketBackend:
 
             # Sensor reads approximately every 1.5 seconds
             await asyncio.sleep(1.5)
-
-    async def check_and_trigger_reflexes(self):
-        """
-        REFLEX PHASE: Check world state and trigger reflexes.
-        
-        Reflex rules:
-        - If distance < 10cm: STOP (proximity safeguard)
-        - If distance > 15cm and stopped: RESUME (clear to move)
-        """
-
-        # Reflex 1: Proximity Safeguard
-        # "If object too close, stop immediately!"
-        if self.distance < 10 and self.movement_state != "STOPPED":
-            self.last_reflex = "proximity_safeguard"
-            await self.record_and_broadcast_event("reflex", {
-                "reflex_name": "proximity_safeguard",
-                "condition": "distance < 10cm",
-                "triggered": True,
-            })
-
-            # Execute the action
-            await self.execute_actuator_action("STOP")
-
-        # Reflex 2: Clear to Move
-        # "If object far away and we were stopped, resume movement"
-        elif self.distance > 15 and self.movement_state == "STOPPED":
-            self.last_reflex = "clear_to_move"
-            await self.record_and_broadcast_event("reflex", {
-                "reflex_name": "clear_to_move",
-                "condition": "distance > 15cm",
-                "triggered": True,
-            })
-
-            # Execute the action
-            await self.execute_actuator_action("MOVING")
-        else:
-            # No reflex triggered
-            if self.last_reflex is not None:
-                self.last_reflex = None
-
-    async def execute_actuator_action(self, action: str):
-        """
-        ACTUATOR PHASE: Execute an actuator action.
-        
-        Actions:
-        - "STOP" → movement_state = STOPPED
-        - "MOVING" → movement_state = MOVING
-        """
-        old_state = self.movement_state
-
-        if action == "STOP":
-            self.movement_state = "STOPPED"
-        elif action == "MOVING":
-            self.movement_state = "MOVING"
-
-        # Broadcast actuator action
-        await self.record_and_broadcast_event("actuator", {
-            "actuator_name": "movement",
-            "actuator_type": "motor",
-            "state": self.movement_state,
-        })
 
     async def run(self):
         """Start the WebSocket backend server."""

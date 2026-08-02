@@ -38,7 +38,8 @@ class ReflexPanel extends BasePanel {
     }
 
     onUpdate(event) {
-        if (event.type !== 'reflex') return;
+        // Same wire-type-vs-channel-name mismatch as worldmodelPanel.js.
+        if (event.type !== 'reflex_event') return;
 
         const { reflex_name, condition, triggered, timestamp } = event.data;
 

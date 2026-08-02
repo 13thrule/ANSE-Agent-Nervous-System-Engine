@@ -154,7 +154,10 @@ class PluginLoader:
     
     def _load_yaml_plugins(self) -> None:
         """Load all YAML plugin definitions."""
-        for yaml_file in self.plugin_dir.glob("*.yaml"):
+        # rglob, not glob: plugins live under category subdirectories
+        # (plugins/sensors/, plugins/actuators/, plugins/cognition/,
+        # plugins/system/), not flat in plugins/ itself.
+        for yaml_file in self.plugin_dir.rglob("*.yaml"):
             # Skip template files
             if yaml_file.name.startswith("_"):
                 logger.debug(f"Skipping template: {yaml_file.name}")
@@ -187,7 +190,7 @@ class PluginLoader:
     
     def _load_python_plugins(self) -> None:
         """Load all Python plugin classes."""
-        for py_file in self.plugin_dir.glob("*.py"):
+        for py_file in self.plugin_dir.rglob("*.py"):
             # Skip __init__ and template files
             if py_file.name.startswith("_") or py_file.name == "__init__.py":
                 logger.debug(f"Skipping template: {py_file.name}")
@@ -273,13 +276,19 @@ class PluginLoader:
             if 'handler' in tool_config:
                 # Handler is embedded Python code
                 handler_code = tool_config['handler']
-                
-                # Create async wrapper
-                async def make_tool_func(code: str, parms: Dict):
+
+                # make_tool_func only builds and returns a closure — it never
+                # needs to be async itself. It used to be defined as `async
+                # def` and invoked via asyncio.run(), which raised
+                # "asyncio.run() cannot be called from a running event loop"
+                # any time plugin loading happened inside async code (i.e.
+                # always, in real use — EngineCore is constructed from an
+                # async context), silently breaking every YAML tool.
+                def make_tool_func(code: str, parms: Dict):
                     async def tool_func(**kwargs):
                         # Create execution context
                         context = {'kwargs': kwargs, 'result': None}
-                        
+
                         # Execute the handler code in the context
                         try:
                             exec(code, context)
@@ -287,21 +296,21 @@ class PluginLoader:
                         except Exception as e:
                             logger.error(f"Error executing handler: {e}")
                             return {'error': str(e)}
-                    
+
                     return tool_func
-                
-                tool_func = asyncio.run(make_tool_func(handler_code, parameters))
-                
+
+                tool_func = make_tool_func(handler_code, parameters)
+
             else:
                 # Static tool (returns predefined values)
                 static_returns = tool_config.get('returns', {})
-                
-                async def make_static_tool(returns_dict: Dict):
+
+                def make_static_tool(returns_dict: Dict):
                     async def static_tool(**kwargs):
                         return returns_dict
                     return static_tool
-                
-                tool_func = asyncio.run(make_static_tool(static_returns))
+
+                tool_func = make_static_tool(static_returns)
             
             # Build schema from parameters
             schema = self._build_parameter_schema(parameters)
@@ -333,15 +342,20 @@ class PluginLoader:
                 continue
             
             if inspect.iscoroutinefunction(method):
-                # Get method signature for parameters
+                # Get method signature for parameters. sig.parameters is a
+                # name -> Parameter mapping; iterating it directly yields the
+                # string keys, not Parameter objects, so `param.default`
+                # below used to raise "'str' object has no attribute
+                # 'default'" for every single Python-plugin method — meaning
+                # no Python plugin tool had ever actually been registered.
                 sig = inspect.signature(method)
                 parameters = {
-                    param: {
+                    param.name: {
                         'type': 'string',  # Default type
                         'required': param.default == inspect.Parameter.empty
                     }
-                    for param in sig.parameters
-                    if param != 'self'
+                    for param in sig.parameters.values()
+                    if param.name != 'self'
                 }
                 
                 # Build description from docstring

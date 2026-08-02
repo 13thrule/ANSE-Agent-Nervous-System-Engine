@@ -1,352 +1,246 @@
-# ANSE — Agent State & Event Engine
+# ANSE — Agent Nervous System Engine
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
-![Tests Passing](https://img.shields.io/badge/tests-passing-brightgreen.svg)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 
-**Connect an LLM to hardware. Enforce safety rules. Log everything.**
+**A local runtime that gives an agent a body — and, critically, reflexes.**
 
-ANSE is a control relay for autonomous agents. You write hardware rules, ANSE enforces them, and your agent reads sensors and sends commands via WebSocket.
-
----
-
-## Start Here (30 seconds)
-
-```yaml
-# 1. Define state
-sensors:
-  motion_detected: false
-  temperature_c: 27.3
-
-actuators:
-  fan_state: off
-
-# 2. Define safety rules
-rules:
-  - if: motion_detected == false
-    then: deny fan  # Don't cool empty houses
-  
-  - if: temperature_c > 40
-    then: force fan on  # Auto-cool on overheat
-```
-
-```python
-# 3. Agent connects and acts
-agent = await connect("ws://localhost:8001")
-state = await agent.get_state()
-
-# Read: {motion_detected: false, temperature_c: 27.3, ...}
-# Send: Command to turn fan on
-# ANSE checks rules → Command rejected (house is empty)
-# Agent adapts based on the rejection
-```
+ANSE connects an agent (an LLM, a script, anything that can hold a WebSocket
+connection) to sensors and actuators. It's built around one specific idea:
+**safety-critical reactions shouldn't have to wait for the agent to think.**
 
 ---
 
-## Why ANSE Exists
+## The idea
 
-**Problem:** You have an LLM that should control hardware, but safety rules live nowhere and actions aren't logged.
+Pull your hand off a hot stove and you'll notice something: you were already
+moving before you consciously registered the pain. That's a spinal reflex
+arc — a fast, hard-wired circuit that reacts to a threshold being crossed
+without waiting for your brain to finish deliberating. Your brain finds out
+what happened *after the fact*, from the same nerve signal that triggered
+the reflex.
 
-ANSE solves this:
-- **One place for rules** — YAML, not scattered code
-- **One place for state** — JSON, not five different systems
-- **One API for agents** — WebSocket, not custom protocols
-- **Full audit trail** — Every decision logged and hashed
+Most "agent + hardware" setups don't have this. The LLM is in the loop for
+*everything* — read the sensor, reason about it, decide, act — which means
+the safety-critical path is only as fast and as reliable as the slowest,
+least deterministic part of the whole system: the model's own reasoning
+loop. If the model hangs, hallucinates, or just takes 4 seconds to respond,
+there's a 4-second window where nothing stops the robot arm, nothing shuts
+off the motor, nothing happens.
 
----
+ANSE splits the loop in two:
 
-## What You Can Build
+- **The reflex path** — deterministic, sub-second, no LLM involved. A sensor
+  reading crosses a threshold, a reflex fires, an actuator responds. This is
+  the part that has to be reliable.
+- **The deliberate path** — the agent reads the world model (the same event
+  stream the reflexes react to) and makes the slower, judgment-based calls:
+  what to do next, how to respond to a user, when to change strategy.
 
-- Home automation with occupancy rules
-- Robotics with collision detection and emergency stops
-- IoT systems with rate limiting and permissions
-- Research with reproducible, logged agent-environment interaction
-
----
-
-## Installation
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Quick Start
-
-**Start the backend:**
-```bash
-python backend/websocket_backend.py
-```
-Listens on `ws://localhost:8001`
-
-**(Optional) Run the dashboard:**
-```bash
-cd dashboard && python -m http.server 8002
-```
-Open `http://localhost:8002/` to watch events in real-time.
-
-**Run an example agent:**
-```bash
-python examples/demo_agent.py
-```
+The agent still sees everything, including what the reflexes did — the same
+way your brain finds out you flinched. It just isn't on the critical path
+for the reaction itself.
 
 ---
 
-## Core Concepts
+## How the pieces map to a nervous system
 
-### Sensors
-Input devices (cameras, temperature sensors, motion detectors, etc.) that emit readings.
+This isn't decorative — each plugin category is a specific, real analogue,
+and (as of this rewrite) each one actually does what its name says:
 
-### State Store
-A timestamped JSON object that captures the current state of all sensors and actuators:
-```json
-{
-  "timestamp": "2026-02-15T12:34:56Z",
-  "sensors": {
-    "temperature_c": 27.3,
-    "motion_detected": false
-  },
-  "actuators": {
-    "fan_state": "off"
-  }
-}
-```
-
-### Safety Rules
-YAML-based rules that validate all commands before they execute. Rules can:
-- Block commands: `if motion==false, deny fan`
-- Auto-trigger: `if temp > 40, force fan on`
-- Emit alerts: `if pressure > 100psi, alert`
-
-Rules always run before commands reach actuators.
-
-### Actuators
-Hardware outputs (motors, heaters, relays, etc.). Controlled by commands or direct rule triggers. All operations logged.
-
-### Agents
-External processes (LLM agents, scripts, etc.) that:
-- Connect via WebSocket to `ws://localhost:8001`
-- Read current state
-- Send commands (which ANSE validates against rules)
-- Observe rejections and adapt behavior
-
----
-
-## How Agents Connect
-
-**ANSE manages state and validates commands. Your agent decides what to do.**
-
-Your agent connects to the WebSocket backend and:
-
-```python
-import asyncio
-import json
-import websockets
-
-async def my_agent():
-    uri = "ws://localhost:8001"
-    async with websockets.connect(uri) as ws:
-        # 1. Receive state updates from sensors
-        async for message in ws:
-            event = json.loads(message)
-            
-            # 2. Make decisions based on state
-            if event["type"] == "sensor":
-                distance = event["data"]["value"]
-                if distance < 10:
-                    # 3. Send commands (ANSE validates)
-                    command = {
-                        "action": "execute_actuator",
-                        "actuator": "movement",
-                        "state": "STOP"
-                    }
-                    await ws.send(json.dumps(command))
-
-asyncio.run(my_agent())
-```
-
-That's the whole pattern: **read state → decide → send command → ANSE validates → agent sees result**.
+| Nervous system | ANSE component | What it actually does |
+|---|---|---|
+| Sensory receptors | `plugins/sensors/` | Sensor plugins — camera, mic, or custom hardware via YAML/Python |
+| Spinal reflex arc | `plugins/system/reflex_system/` | Watches the world model event bus; fires an actuator tool directly when a sensor crosses a threshold — no agent involved |
+| Motor output | `plugins/actuators/motor_control/` | Wheel/servo control, with safety limits and rate limiting |
+| Proprioception | `plugins/cognition/body_schema/` | A self-model: what sensors/actuators/joints exist and what they can do |
+| Memory consolidation | `plugins/cognition/long_term_memory/` | Persistent storage beyond the rolling event log |
+| Motivation / reinforcement | `plugins/cognition/reward_system/` | Reward tracking over time |
+| The state the brain reasons over | `anse/world_model.py` | An append-only event log **and** a real pub/sub event bus — see below |
+| An EEG probe for a human operator | `plugins/system/dashboard_bridge/` | Read-focused bridge exposing live state to the web dashboard |
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────┐
-│  Your Agent (LLM/Script) │
-│   WebSocket Connection   │
-└───────────┬──────────────┘
-            │
-            ↕ ws://localhost:8001
-            │
-┌───────────────────────────────────┐
-│      ANSE Control Relay           │
-├───────────────────────────────────┤
-│  Sensors → State Store            │
-│  State Store → Rule Engine        │
-│  Rule Engine → Actuators          │
-│  All Events → Audit Log           │
-└───────────────────────────────────┘
-            │
-            ↓
-        Hardware
+                    ┌─────────────────────────────┐
+                    │   Sensors (real or simulated)│
+                    └───────────────┬─────────────┘
+                                    │ world.record_sensor_reading(...)
+                                    ▼
+                    ┌─────────────────────────────┐
+                    │   World Model (event bus)    │  ← anse/world_model.py
+                    │   append_event() → notifies  │
+                    │   every subscriber, live      │
+                    └───────┬───────────────┬──────┘
+              (fast path)   │               │   (slow path)
+                            ▼               ▼
+              ┌───────────────────┐   ┌─────────────────────┐
+              │  reflex_system     │   │   Your agent         │
+              │  plugin — reacts   │   │   (LLM / script),     │
+              │  to a threshold,   │   │   connected over       │
+              │  calls an actuator │   │   WebSocket, reads      │
+              │  tool directly     │   │   world-model events    │
+              │  (sub-second,      │   │   and decides the        │
+              │  no agent in the   │   │   slower stuff            │
+              │  loop)             │   │                            │
+              └─────────┬──────────┘   └────────────┬───────────────┘
+                        │                            │
+                        ▼                            ▼
+              ┌─────────────────────────────────────────────┐
+              │              Actuators (tool_registry)        │
+              └─────────────────────────────────────────────┘
 ```
 
----
-
-## Built-In Tools
-
-| Tool | Purpose |
-|------|---------|
-| `capture_frame()` | Capture camera frame (640×480) |
-| `list_cameras()` | List available cameras |
-| `analyze_frame()` | Edge/corner detection, color histogram |
-| `record_audio()` | Record from microphone |
-| `list_audio_devices()` | List microphones and speakers |
-| `analyze_audio()` | FFT frequency analysis, RMS, peak |
-| `say()` | Text-to-speech synthesis |
-| `get_voices()` | List TTS voices |
-
-All tools have simulated equivalents (set `ANSE_SIMULATE=1` to test without hardware).
+The event bus (`WorldModel.subscribe()`) is what makes this real rather than
+aspirational: `EngineCore` automatically subscribes any plugin that
+implements `process_world_model_event()` when it loads, so a reflex reacts
+to a sensor reading the instant it's recorded — not on a poll, not on the
+next agent turn.
 
 ---
 
-## Safety & Audit
+## Quick start
 
-Safety is built-in, not bolted-on:
+```bash
+pip install -r requirements.txt
 
-| Feature | Details |
-|---------|---------|
-| **Rules** | Block, allow, or trigger commands based on state |
-| **Permissions** | Per-agent scopes for camera, mic, network, filesystem |
-| **Rate Limiting** | Per-tool limits (e.g., 30 camera calls/min) |
-| **Audit Trail** | Immutable JSONL log with SHA256 hashes |
-| **Isolation** | Per-agent quotas prevent interference |
+# Terminal demo — proves the reflex bus works with no UI at all
+python examples/reflex_bus_demo.py
 
-Audit log entry:
-```json
-{
-  "timestamp": "2026-02-14T10:30:45Z",
-  "agent_id": "agent-001",
-  "tool": "capture_frame",
-  "status": "success",
-  "duration_ms": 145
-}
+# Live dashboard — watch reflexes fire in a browser in real time
+python backend/websocket_backend.py        # terminal 1: engine + WebSocket
+cd dashboard && python -m http.server 8002 # terminal 2: static dashboard
+# open http://localhost:8002
+```
+
+The dashboard connects to `ws://localhost:8001` and shows a simulated
+distance sensor approaching and receding. When it crosses 10cm, the real
+`reflex_system` plugin fires a `movement_stop` actuator call — you'll see
+the World Model panel flip to `STOPPED`, the reflex show up in the event
+log, and the whole thing recover automatically once the sensor clears 15cm.
+Nothing in that loop is hardcoded to the dashboard; the same event bus
+drives both the terminal demo and the browser view.
+
+---
+
+## Building a reflex
+
+This is the actual API a reflex is built from — no YAML DSL, just a direct
+call against the loaded plugin:
+
+```python
+core = EngineCore(simulate=True)
+
+core.register_tool(
+    name="emergency_stop",
+    func=my_stop_function,
+    description="Immediately halt actuator motion",
+    parameters={"reason": {"type": "string"}},
+    sensitivity="high",
+    cost_hint={"latency_ms": 10},
+)
+
+reflex = core.plugins["reflex_system"]
+await reflex.add_reflex(
+    sensor_name="distance_cm",
+    threshold=10,
+    comparison="less_than",
+    action_tool="emergency_stop",
+    action_args={"reason": "object within 10cm"},
+)
+await reflex.enable_background_monitoring()
+
+# From here on, every core.world.record_sensor_reading("distance_cm", v)
+# is checked against this rule automatically — no polling, no agent call.
 ```
 
 ---
 
 ## Plugins
 
-Add custom sensors, actuators, or tools.
+Two ways to extend ANSE, both auto-discovered recursively from `plugins/`
+(category subfolders — `sensors/`, `actuators/`, `cognition/`, `system/`):
 
-**YAML plugin (5 minutes):**
-```yaml
-# plugins/temp_sensor.yaml
-name: temp_sensor
-description: Temperature sensor
+- **YAML plugins** — a config file with inline handler code. No Python
+  packaging, good for simple integrations. See `plugins/sensors/_template_sensor.yaml`.
+- **Python plugins** — a class with `name`/`description` and public async
+  methods. Every public async method is automatically registered as a
+  callable tool (`{plugin_name}_{method_name}`); any method named
+  `process_world_model_event(event, engine)` is automatically subscribed to
+  the world model's event bus.
 
-tools:
-  - name: read_temp
-    description: Read temperature
-    handler: |
-      return {"temp_c": 23.5, "timestamp": datetime.now().isoformat()}
+See [docs/PLUGINS.md](docs/PLUGINS.md) for the full guide.
+
+---
+
+## Where this stands right now
+
+Being direct about this, because the gap between "described in the docs"
+and "actually wired up" is exactly what this rewrite exists to close.
+
+### Real, and proven working today
+- **The event bus.** `WorldModel.subscribe()` + notification on every
+  `append_event()`. Confirmed live: fed simulated sensor readings through
+  it and watched `reflex_system` fire an actuator call with no agent
+  involved, both from a terminal script and from the browser dashboard.
+- **Plugin discovery and registration.** Both were silently broken before
+  this pass — discovery only checked the top level of `plugins/` (missed
+  everything in the category subfolders), and registration threw on every
+  single plugin it did find (an `asyncio.run()` inside an already-running
+  loop for YAML plugins, a signature-iteration bug for Python plugins).
+  Fixed; going from 0 usable plugin tools to 60.
+- **The dashboard.** The backend and frontend didn't agree on the wire
+  protocol, and the frontend's own event router checked for the wrong type
+  strings — so only the raw event log ever worked; the World Model, Sensor,
+  Actuator, and Reflex panels were dead on arrival. Fixed; the dashboard
+  now reflects real reflex firings live.
+- **Rate limiting** (`anse/scheduler.py`) — was already real, unaffected by
+  any of the above.
+
+### Exists, but not wired up yet — known, not hidden
+- **`anse/safety/permission.py`** (scopes, human-approval-required lists) is
+  fully implemented but never actually called from the tool-execution path.
+  Right now it's decorative — nothing currently enforces a scope or blocks
+  an unapproved tool call.
+- **Declarative safety rules** (a YAML `if: / then: deny` style DSL) don't
+  exist as a parser anywhere in the codebase. The real, working equivalent
+  is `reflex_system.add_reflex()` above — imperative, not declarative, but
+  actually functional.
+- The sandboxed filesystem/network tools (`anse/tools/filesystem.py`,
+  `network.py`) haven't been re-audited as part of this pass — treat them
+  as unverified until someone does.
+
+### Tests
+`pytest tests/ -q --ignore=tests/test_operator_ui.py` → 60 passed, 2 failed
+(both because `opencv-python` isn't installed in the dev environment, not a
+code issue), 16 skipped. `test_operator_ui.py` imports a module
+(`operator_ui`) that doesn't exist in this repo and needs to either be
+removed or have that subsystem actually built.
+
+---
+
+## Project layout
+
 ```
-
-**Python plugin:**
-```python
-# plugins/my_plugin.py
-from anse.plugin import SensorPlugin
-
-class MyPlugin(SensorPlugin):
-    name = "my_plugin"
-    async def read_sensor(self):
-        return {"status": "ok", "value": 42}
+anse/                    core engine — world model, tool registry, scheduler,
+                          plugin loader, safety policy, agent bridge
+plugins/
+  sensors/                sensor plugins (YAML + Python)
+  actuators/               motor control, etc.
+  cognition/                body_schema, long_term_memory, reward_system
+  system/                    reflex_system, dashboard_bridge
+backend/websocket_backend.py  live demo: real engine + WebSocket + dashboard feed
+dashboard/                    browser UI — vanilla JS, zero build step
+examples/reflex_bus_demo.py   terminal-only proof the event bus works
+tests/                         pytest suite
+docs/                           API.md, PLUGINS.md, DESIGN.md, etc.
 ```
-
-See [docs/PLUGINS.md](docs/PLUGINS.md) for complete guide.
-
----
-
-## What ANSE Is NOT
-
-- **Not a VLA model** — No vision+language+action branches
-- **Not a world model** — No neural networks, no inference
-- **Not a planning system** — No motion planning or autonomous reasoning
-- **Not AGI** — Deterministic rule enforcement
-
-ANSE is: **A deterministic control relay that enforces rules and logs everything.**
-
----
-
-## Documentation
-
-| Guide | Audience |
-|-------|----------|
-| [QUICKSTART.md](docs/QUICKSTART.md) | Get started in 5 minutes |
-| [API.md](docs/API.md) | WebSocket method reference |
-| [DESIGN.md](docs/DESIGN.md) | Architecture deep-dive |
-| [PLUGINS.md](docs/PLUGINS.md) | Extend with custom tools |
-| [AUDIT_REPORT_FEB_2026.md](docs/AUDIT_REPORT_FEB_2026.md) | What's implemented |
-| [PHASE_4_ROADMAP.md](docs/PHASE_4_ROADMAP.md) | Future features |
-| [WHAT_ANSE_IS.md](docs/WHAT_ANSE_IS.md) | Project rationale |
-
-All docs in [docs/](docs/) folder.
-
----
-
-## Project Status
-
-| Component | Status |
-|-----------|--------|
-| Core engine | ✅ Stable (tested, production-ready) |
-| Sensor tools | ✅ Complete (7 tools) |
-| Safety rules | ✅ Complete |
-| Audit logging | ✅ Complete (SHA256 hashing) |
-| WebSocket API | ✅ Complete |
-| Dashboard | ✅ Complete (HTML/CSS/JS, zero deps) |
-| Tests | ✅ Complete (111+ passing) |
-| Documentation | ✅ Complete (8 guides) |
-
----
-
-## Testing
-
-Run the test suite:
-```bash
-pytest tests/ -v
-```
-
-All 111+ tests passing.
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting issues and submitting PRs.
 
 ---
 
 ## License
 
-MIT License — See [LICENSE](LICENSE)
-
----
-
-## Citation
-
-```bibtex
-@software{anse2026,
-  title={ANSE: Agent State & Event Engine},
-  author={13thrule},
-  year={2026},
-  url={https://github.com/13thrule/ANSE-Agent-State-Event-Engine}
-}
-```
-
----
-
-**Status:** Stable and production-ready  
-**Python:** 3.8+ | **Platform:** Windows, macOS, Linux  
-**Last Updated:** February 2026
+MIT — see [LICENSE](LICENSE).
