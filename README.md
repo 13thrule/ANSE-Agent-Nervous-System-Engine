@@ -44,6 +44,52 @@ for the reaction itself.
 
 ---
 
+## Is this new?
+
+The fast/slow split by itself, no. Rodney Brooks' subsumption architecture
+(1986) and the three-layer robot architectures of the 1990s established the
+same shape: a bounded, real-time reactive layer that never waits on a
+slower planner. Industrial safety systems have done "hardware-rooted
+reflex, independent of the main controller" for decades — that's what an
+e-stop circuit or safety PLC is. And recent research already puts an LLM
+specifically in the deliberative slot above a reflex layer — see below.
+
+What almost all of that prior art has in common: the reflex layer is a
+**gatekeeper**. It vets or vetoes what the LLM wants to do before the
+action happens. ANSE doesn't gate. The agent isn't overruled — it reads
+the exact same event stream the reflex reacts to, and finds out what
+happened *after the fact*, the way you find out you flinched before you
+consciously registered the pain. No veto relationship, no permission check
+sitting in the reaction path. That specific wiring — retroactive,
+shared-stream, no gate — is the part of this that looks genuinely
+uncommon.
+
+The other thing this brings that most of the prior art doesn't: it runs.
+This isn't a diagram or a simulation — it's a pluggable engine with
+sensors and actuators auto-discovered from YAML or Python, proven on about
+$30 of real hardware (see [Real hardware](#real-hardware) below).
+
+**Related work, for context — read the honest version, not the pitch:**
+- [Subsumption architecture](https://en.wikipedia.org/wiki/Subsumption_architecture)
+  (Brooks, 1986) and the [three-layer architecture](https://en.wikipedia.org/wiki/Three-layer_architecture)
+  robot designs — the reactive/deliberative split, decades before LLMs.
+- [*Bridging Intelligence and Instinct*](https://arxiv.org/abs/2307.10690)
+  (2023) — brain/brainstem framing, an "instinct" module independent of
+  the LLM, aimed at hallucination risk.
+- [*From Brain to Reflex*](https://www.sciencedirect.com/science/article/abs/pii/S2452414X2500233X)
+  (2025) and [*NeuroVLA*](https://arxiv.org/abs/2601.14628) (2026) —
+  20–30ms reflex arcs beneath LLM-level planning, explicitly modeled on
+  human reflexes.
+- Industrial e-stop circuits and safety PLCs (NFPA 79) — hardware-rooted
+  stop functions independent of the main controller, standard practice
+  long before any of this.
+- A [hobbyist Gemini+Arduino project](https://medium.com/@msveshnikov/building-a-sentient-robot-with-gemini-ai-and-arduino-uno-q-from-plastic-parts-to-digital-f58843c6cf3d)
+  with an almost identical reflex/agent split and the same "nervous
+  system" metaphor — built for latency isolation, not framed around
+  grounding the LLM in physical consequence.
+
+---
+
 ## How the pieces map to a nervous system
 
 This isn't decorative — each plugin category is a specific, real analogue,
