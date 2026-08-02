@@ -238,6 +238,18 @@ control — the specific thing this whole project is about grounding.
 python -u examples/arduino_deliberate_agent_demo.py --port COM3
 ```
 
+**Live dashboard, real hardware.** `backend/websocket_backend_hardware.py`
+is the same browser dashboard from [Quick start](#quick-start), pointed at
+this real board instead of the simulated distance loop — same
+`reflex_system`, same wire protocol to the frontend, `movement_stop`/
+`movement_resume` now drive the real servo and LED over serial.
+
+```bash
+python backend/websocket_backend_hardware.py --port COM3   # terminal 1
+cd dashboard && python -m http.server 8002                  # terminal 2
+# open http://localhost:8002
+```
+
 ---
 
 ## Building a reflex
