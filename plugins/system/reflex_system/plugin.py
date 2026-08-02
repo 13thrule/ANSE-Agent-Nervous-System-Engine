@@ -61,7 +61,12 @@ class ReflexSystemPlugin:
             "action_tool": action_tool,
             "action_args": action_args or {},
             "created_at": datetime.now().isoformat(),
-            "triggered_count": 0
+            "triggered_count": 0,
+            # Edge-triggered state: True once the condition has fired and
+            # hasn't cleared yet, so a sensor sitting past the threshold
+            # across many readings only fires the action once per crossing
+            # instead of once per reading.
+            "active": False
         }
 
         logger.info(f"[REFLEX] Added reflex {reflex_id}: {sensor_name} {comparison} {threshold} → {action_tool}")
@@ -158,13 +163,21 @@ class ReflexSystemPlugin:
                 elif reflex["comparison"] == "equal_to":
                     triggered = abs(sensor_value - reflex["threshold"]) < 0.01
                 
-                # Trigger action if threshold crossed
-                if triggered:
+                # Fire only on the rising edge -- a sensor sitting past the
+                # threshold across many readings should trigger the action
+                # once per crossing, not once per reading. Resetting "active"
+                # the moment the condition clears means the next crossing
+                # still fires for real; this isn't a cooldown or a rate
+                # limit, just de-duplication of one continuous event.
+                if triggered and not reflex["active"]:
+                    reflex["active"] = True
                     logger.info(f"[REFLEX] Triggered {reflex_id}: {reflex['action_tool']}({reflex['action_args']})")
                     try:
                         await engine.tools.call(reflex["action_tool"], reflex["action_args"])
                         reflex["triggered_count"] += 1
                     except Exception as e:
                         logger.error(f"[REFLEX] Failed to execute action {reflex['action_tool']}: {e}")
+                elif not triggered:
+                    reflex["active"] = False
         except Exception as e:
             logger.error(f"[REFLEX] Event processing error: {e}")
