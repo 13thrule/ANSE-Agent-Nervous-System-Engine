@@ -223,6 +223,21 @@ DHT11 and watching the temperature climb past threshold in real time. Same
 `reflex_system.add_reflex()` call as the simulated demo; the sensor just
 happens to be a real one this time.
 
+**The deliberate path, proven too.** Everything above is the reflex
+half — sub-second, no LLM. `examples/arduino_deliberate_agent_demo.py` is
+the other half: it watches the same real telemetry for a window, then
+reads the world model's own event log *after the fact* (the same way you
+find out you flinched) and takes a separate action — speaking a summary of
+what actually happened via the `say` tool. The reasoning in that script is
+plain arithmetic so the demo doesn't need an API key, but the shape is the
+real one: hand `core.world.get_recent(n)` to an actual LLM instead, and
+this becomes an agent narrating and acting on physical events it didn't
+control — the specific thing this whole project is about grounding.
+
+```bash
+python -u examples/arduino_deliberate_agent_demo.py --port COM3
+```
+
 ---
 
 ## Building a reflex
@@ -346,6 +361,7 @@ backend/websocket_backend.py  live demo: real engine + WebSocket + dashboard fee
 dashboard/                    browser UI — vanilla JS, zero build step
 examples/reflex_bus_demo.py   terminal-only proof the event bus works
 examples/arduino_hardware_demo.py       same demo, driven by a real Arduino over serial
+examples/arduino_deliberate_agent_demo.py  the deliberate path, proven on the same hardware
 examples/arduino/anse_reflex_demo/      the .ino sketch — HC-SR04 + servo + DHT11
 tests/                         pytest suite
 docs/                           API.md, PLUGINS.md, DESIGN.md, etc.
