@@ -69,7 +69,7 @@ class EngineCore:
         self.tools = ToolRegistry()
         self.world = WorldModel()
         self.permissions = PermissionManager(policy_path)
-        self.scheduler = Scheduler(self.tools, self.world)
+        self.scheduler = Scheduler(self.tools, self.world, self.permissions)
         self.bridge = AgentBridge(self.tools, self.world, self.scheduler, self.permissions)
         
         # Register built-in tools

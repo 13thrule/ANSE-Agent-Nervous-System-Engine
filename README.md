@@ -300,12 +300,18 @@ and "actually wired up" is exactly what this rewrite exists to close.
   any of the above.
 - **Real hardware.** The same reflex path proven on physical hardware, not
   just simulated readings — see [Real hardware](#real-hardware) above.
+- **Permission enforcement.** `anse/safety/permission.py` used to be
+  decorative — fully implemented, never called. `Scheduler.execute_call()`
+  (the agent-facing path, reached via `AgentBridge`) now checks
+  `check_permission()` and `requires_approval()` before every call, using
+  the tool name as its scope; a tool listed in `sensitive_scopes` or
+  `approval_required` in `safety_policy.yaml` is actually blocked now, not
+  just documented as blockable. Deliberately **not** wired into
+  `reflex_system` — reflexes call `ToolRegistry` directly and skip this
+  gate entirely, because the reflex path has to stay sub-second and
+  unconditional; permission checks only make sense on the deliberate path.
 
 ### Exists, but not wired up yet — known, not hidden
-- **`anse/safety/permission.py`** (scopes, human-approval-required lists) is
-  fully implemented but never actually called from the tool-execution path.
-  Right now it's decorative — nothing currently enforces a scope or blocks
-  an unapproved tool call.
 - **Declarative safety rules** (a YAML `if: / then: deny` style DSL) don't
   exist as a parser anywhere in the codebase. The real, working equivalent
   is `reflex_system.add_reflex()` above — imperative, not declarative, but
@@ -315,11 +321,14 @@ and "actually wired up" is exactly what this rewrite exists to close.
   as unverified until someone does.
 
 ### Tests
-`pytest tests/ -q --ignore=tests/test_operator_ui.py` → 60 passed, 2 failed
-(both because `opencv-python` isn't installed in the dev environment, not a
-code issue), 16 skipped. `test_operator_ui.py` imports a module
-(`operator_ui`) that doesn't exist in this repo and needs to either be
-removed or have that subsystem actually built.
+`pytest tests/ -q` → 53 passed, 25 skipped (skips are hardware-dependent —
+no camera/mic on the test machine — not code gaps), 0 failed.
+`tests/test_operator_ui.py` has been removed: it imported an `operator_ui`
+package that was never part of this repo (a separate, optional companion
+console — `anse/operator_ui_bridge.py` already handles its absence
+gracefully). The `.venv` in this repo also used to point at a Python
+install that no longer existed on the dev machine; it's been recreated
+against a current interpreter.
 
 ---
 

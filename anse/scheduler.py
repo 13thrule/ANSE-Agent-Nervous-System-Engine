@@ -6,17 +6,30 @@ import time
 from typing import Dict, Any, Optional
 from anse.tool_registry import ToolRegistry
 from anse.world_model import WorldModel
+from anse.safety.permission import PermissionManager
 
 
 class Scheduler:
     """
     Handles scheduling and execution of tool calls with rate limiting,
-    timeouts, and event logging.
+    timeouts, permission/approval enforcement, and event logging.
+
+    This is the agent-facing call path (reached via AgentBridge). Reflexes
+    call ToolRegistry directly and bypass this gate entirely — that's
+    intentional, not an oversight: the reflex path has to stay sub-second
+    and unconditional, so permission checks only apply to the deliberate
+    (agent-initiated) path.
     """
 
-    def __init__(self, tools: ToolRegistry, world: WorldModel):
+    def __init__(
+        self,
+        tools: ToolRegistry,
+        world: WorldModel,
+        permissions: Optional[PermissionManager] = None,
+    ):
         self.tools = tools
         self.world = world
+        self.permissions = permissions
         self._call_counter = 0
         self._rate_limits: Dict[str, Dict[str, Any]] = {}
 
@@ -98,6 +111,40 @@ class Scheduler:
                 "args": args,
             }
         )
+
+        # Check permission scope and approval requirements
+        if self.permissions is not None:
+            allowed, reason = self.permissions.check_permission(
+                agent_id, tool, required_scope=tool
+            )
+            if not allowed:
+                result = {"status": "error", "error": "permission_denied", "reason": reason, "call_id": call_id}
+                self.world.append_event(
+                    {
+                        "type": "tool_result",
+                        "agent_id": agent_id,
+                        "call_id": call_id,
+                        "result": result,
+                    }
+                )
+                return result
+
+            if self.permissions.requires_approval(tool, scope=tool):
+                result = {
+                    "status": "error",
+                    "error": "approval_required",
+                    "reason": f"'{tool}' requires human approval before execution",
+                    "call_id": call_id,
+                }
+                self.world.append_event(
+                    {
+                        "type": "tool_result",
+                        "agent_id": agent_id,
+                        "call_id": call_id,
+                        "result": result,
+                    }
+                )
+                return result
 
         # Check rate limits
         if not self._check_rate_limit(tool):
